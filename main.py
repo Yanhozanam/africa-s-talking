@@ -1,7 +1,7 @@
 from urllib import request
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 import grpc
 import os
@@ -12,11 +12,13 @@ import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 
+# Import our custom USSD handler
+from ussd_handler import handle_ussd
+
 # Load environment variables from .env file
 load_dotenv()
 
-# Import LND gRPC stubs (you'll need to generate these)
-# Run: python -m grpc_tools.protoc --proto_path=. --python_out=. --grpc_python_out=. lightning.proto
+# Import LND gRPC stubs
 try:
     import lightning_pb2 as ln
     import lightning_pb2_grpc as lnrpc
@@ -418,7 +420,7 @@ async def sign_message(data: SignMessageRequest):
 async def verify_message(data: dict = Body(...)):
     msg = data.get('message')
     signature = data.get('signature')
-    pubkey = data.get('pubkey') # The public key of the sender
+    pubkey = data.get('pubkey') 
     if not msg or not signature or not pubkey:
         return JSONResponse(content={"error": "Message, signature, and pubkey are required"}, status_code=400)
 
@@ -426,14 +428,24 @@ async def verify_message(data: dict = Body(...)):
         verify_req = ln.VerifyMessageRequest(msg=msg.encode('utf-8'), signature=signature)
         verify_resp = lnd.stub.VerifyMessage(verify_req, metadata=lnd._get_metadata())
 
-        # Safely get recovered_pubkey if it exists
         recovered_pubkey = getattr(verify_resp, 'recovered_pubkey', None)
         is_valid = verify_resp.valid
         return JSONResponse(content={"valid": is_valid }, status_code=200)
     except grpc.RpcError as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
+# --- AFRICA'S TALKING USSD ROUTE (PLACED CORRECTLY) ---
+@app.post("/ussd", response_class=PlainTextResponse)
+async def ussd_endpoint(
+    sessionId: str = Form(...),
+    phoneNumber: str = Form(...),
+    text: str = Form(""),
+    serviceCode: str = Form("")
+):
+    response = await handle_ussd(sessionId, phoneNumber, text)
+    return response
 
+# --- EXECUTION BLOCK (ALWAYS GOES AT THE ABSOLUTE BOTTOM) ---
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host=config.SERVER_HOST, port=config.SERVER_PORT)
